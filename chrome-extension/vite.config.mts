@@ -50,6 +50,7 @@ export default defineConfig({
     minify: isProduction,
     reportCompressedSize: isProduction,
     watch: watchOption,
+    target: 'esnext', // Use modern JS to preserve arrow functions
     rollupOptions: {
       external: [
         'chrome',

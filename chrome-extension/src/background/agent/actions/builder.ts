@@ -157,6 +157,38 @@ export class ActionBuilder {
     actions.push(searchGoogle);
 
     const goToUrl = new Action(async (input: { url: string }) => {
+      const page = await this.context.browserContext.getCurrentPage();
+      const currentUrl = page.url();
+
+      // Normalize URLs for comparison (remove trailing slashes, handle http/https)
+      const normalizeUrl = (url: string) => {
+        try {
+          const parsed = new URL(url);
+          // Remove trailing slash and convert to lowercase for comparison
+          return parsed.origin.toLowerCase() + parsed.pathname.replace(/\/$/, '').toLowerCase() + parsed.search;
+        } catch {
+          return url.toLowerCase().replace(/\/$/, '');
+        }
+      };
+
+      const normalizedCurrent = normalizeUrl(currentUrl);
+      const normalizedTarget = normalizeUrl(input.url);
+
+      // Check if we're already on the target URL (or a variant of it)
+      if (
+        normalizedCurrent === normalizedTarget ||
+        normalizedCurrent.startsWith(normalizedTarget) ||
+        normalizedTarget.startsWith(normalizedCurrent)
+      ) {
+        const msg = `Already on ${input.url} - skipping navigation`;
+        logger.info(msg);
+        this.context.emitEvent(Actors.NAVIGATOR, ExecutionState.ACT_OK, msg);
+        return new ActionResult({
+          extractedContent: msg,
+          includeInMemory: true,
+        });
+      }
+
       const msg = `Navigating to ${input.url}`;
       this.context.emitEvent(Actors.NAVIGATOR, ExecutionState.ACT_START, msg);
 
@@ -197,7 +229,15 @@ export class ActionBuilder {
 
         const elementNode = state?.selectorMap.get(input.index);
         if (!elementNode) {
-          throw new Error(`Element with index ${input.index} does not exist - retry or use alternative actions`);
+          const mapSize = state?.selectorMap?.size ?? 0;
+          const availableIndices =
+            mapSize > 0
+              ? Array.from(state!.selectorMap.keys()).slice(0, 10).join(', ') + (mapSize > 10 ? '...' : '')
+              : 'none';
+          throw new Error(
+            `Element with index ${input.index} does not exist - selectorMap has ${mapSize} elements (available: ${availableIndices}). ` +
+              `The page might have changed - retry or use alternative actions`,
+          );
         }
 
         // Check if element is a file uploader
@@ -253,7 +293,15 @@ export class ActionBuilder {
 
         const elementNode = state?.selectorMap.get(input.index);
         if (!elementNode) {
-          throw new Error(`Element with index ${input.index} does not exist - retry or use alternative actions`);
+          const mapSize = state?.selectorMap?.size ?? 0;
+          const availableIndices =
+            mapSize > 0
+              ? Array.from(state!.selectorMap.keys()).slice(0, 10).join(', ') + (mapSize > 10 ? '...' : '')
+              : 'none';
+          throw new Error(
+            `Element with index ${input.index} does not exist - selectorMap has ${mapSize} elements (available: ${availableIndices}). ` +
+              `The page might have changed - retry or use alternative actions`,
+          );
         }
 
         await page.inputTextElementNode(this.context.options.useVision, elementNode, input.text);

@@ -33,7 +33,7 @@ declare global {
 export async function getScrollInfo(tabId: number): Promise<[number, number]> {
   const results = await chrome.scripting.executeScript({
     target: { tabId: tabId },
-    func: () => {
+    func: function () {
       const scroll_y = window.scrollY;
       const viewport_height = window.innerHeight;
       const total_height = document.documentElement.scrollHeight;
@@ -60,7 +60,7 @@ export async function getScrollInfo(tabId: number): Promise<[number, number]> {
 export async function getMarkdownContent(tabId: number, selector?: string): Promise<string> {
   const results = await chrome.scripting.executeScript({
     target: { tabId: tabId },
-    func: sel => {
+    func: function (sel: string) {
       return window.turn2Markdown(sel);
     },
     args: [selector || ''], // Pass the selector as an argument
@@ -81,7 +81,7 @@ export async function getMarkdownContent(tabId: number, selector?: string): Prom
 export async function getReadabilityContent(tabId: number): Promise<ReadabilityResult> {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => {
+    func: function () {
       return window.parserReadability();
     },
   });
@@ -140,10 +140,38 @@ async function _buildDomTree(
   focusElement = -1,
   viewportExpansion = 0,
 ): Promise<DOMElementNode> {
+  // First, ensure buildDomTree.js is injected
+  try {
+    const isInjected = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: function () {
+        return typeof window.buildDomTree === 'function';
+      },
+    });
+
+    if (!isInjected[0]?.result) {
+      logger.info('buildDomTree not found, injecting script...');
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['buildDomTree.js'],
+      });
+      // Small delay to ensure script is loaded
+      await new Promise(function (resolve) {
+        setTimeout(resolve, 100);
+      });
+    }
+  } catch (injectionError) {
+    logger.error('Failed to inject buildDomTree script:', injectionError);
+  }
+
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: args => {
+    func: function (args: { doHighlightElements: boolean; focusHighlightIndex: number; viewportExpansion: number }) {
       // Access buildDomTree from the window context of the target page
+      if (typeof window.buildDomTree !== 'function') {
+        console.error('buildDomTree function not available');
+        return null;
+      }
       return window.buildDomTree(args);
     },
     args: [
@@ -215,7 +243,7 @@ export async function removeHighlights(tabId: number): Promise<void> {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => {
+      func: function () {
         // Remove the highlight container and all its contents
         const container = document.getElementById('playwright-highlight-container');
         if (container) {

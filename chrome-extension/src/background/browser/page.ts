@@ -17,11 +17,11 @@ import {
   getScrollInfo as _getScrollInfo,
   getMarkdownContent as _getMarkdownContent,
   getReadabilityContent as _getReadabilityContent,
+  type ReadabilityResult,
 } from '../dom/service';
 import { DOMElementNode, type DOMState } from '../dom/views';
 import { type BrowserContextConfig, DEFAULT_BROWSER_CONTEXT_CONFIG, type PageState } from './types';
 import { createLogger } from '@src/background/log';
-import { use } from 'react/ts5.0';
 
 const logger = createLogger('Page');
 
@@ -199,7 +199,18 @@ export default class Page {
 
   async getReadabilityContent(): Promise<ReadabilityResult> {
     if (!this._validWebPage) {
-      return '';
+      return {
+        title: '',
+        content: '',
+        textContent: '',
+        length: 0,
+        excerpt: '',
+        byline: '',
+        dir: '',
+        siteName: '',
+        lang: '',
+        publishedTime: '',
+      };
     }
     return _getReadabilityContent(this._tabId);
   }
@@ -280,21 +291,18 @@ export default class Page {
     }
 
     try {
-      // First disable animations/transitions
-      await this._puppeteerPage.evaluate(() => {
-        const styleId = 'puppeteer-disable-animations';
-        if (!document.getElementById(styleId)) {
-          const style = document.createElement('style');
-          style.id = styleId;
-          style.textContent = `
-            *, *::before, *::after {
-              animation: none !important;
-              transition: none !important;
-            }
-          `;
-          document.head.appendChild(style);
-        }
-      });
+      // First disable animations/transitions using string-based evaluate
+      await this._puppeteerPage.evaluate(`
+        (function() {
+          const styleId = 'puppeteer-disable-animations';
+          if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = '*, *::before, *::after { animation: none !important; transition: none !important; }';
+            document.head.appendChild(style);
+          }
+        })()
+      `);
 
       // Take the screenshot using JPEG format with 80% quality
       const screenshot = await this._puppeteerPage.screenshot({
@@ -304,13 +312,15 @@ export default class Page {
         quality: 80, // Good balance between quality and file size
       });
 
-      // Clean up the style element
-      await this._puppeteerPage.evaluate(() => {
-        const style = document.getElementById('puppeteer-disable-animations');
-        if (style) {
-          style.remove();
-        }
-      });
+      // Clean up the style element using string-based evaluate
+      await this._puppeteerPage.evaluate(`
+        (function() {
+          const style = document.getElementById('puppeteer-disable-animations');
+          if (style) {
+            style.remove();
+          }
+        })()
+      `);
 
       return screenshot as string;
     } catch (error) {
@@ -681,7 +691,6 @@ export default class Page {
 
   async locateElement(element: DOMElementNode): Promise<ElementHandle | null> {
     if (!this._puppeteerPage) {
-      // throw new Error('Puppeteer page is not connected');
       logger.warning('Puppeteer is not connected');
       return null;
     }
@@ -701,32 +710,108 @@ export default class Page {
       const cssSelector = parent.enhancedCssSelectorForElement(this._config.includeDynamicAttributes);
       const frameElement: ElementHandle | null = await currentFrame.$(cssSelector);
       if (!frameElement) {
-        // throw new Error(`Could not find iframe with selector: ${cssSelector}`);
         logger.warning(`Could not find iframe with selector: ${cssSelector}`);
         return null;
       }
       const frame: Frame | null = await frameElement.contentFrame();
       if (!frame) {
-        // throw new Error(`Could not access frame content for selector: ${cssSelector}`);
         logger.warning(`Could not access frame content for selector: ${cssSelector}`);
         return null;
       }
       currentFrame = frame;
     }
 
+    // Strategy 1: Try CSS selector first
     const cssSelector = element.enhancedCssSelectorForElement(this._config.includeDynamicAttributes);
+    logger.info(`Locating element with CSS selector: ${cssSelector}`);
 
     try {
       const elementHandle: ElementHandle | null = await currentFrame.$(cssSelector);
       if (elementHandle) {
-        // Scroll element into view if needed
+        logger.info(`Element found with CSS selector: ${cssSelector}`);
         await this._scrollIntoViewIfNeeded(elementHandle);
         return elementHandle;
       }
+      logger.warning(`Element NOT found with CSS selector: ${cssSelector}`);
     } catch (error) {
-      logger.error('Failed to locate element:', error);
+      logger.error(`Failed to locate element with CSS selector ${cssSelector}:`, error);
     }
 
+    // Strategy 2: Try using the XPath directly
+    if (element.xpath) {
+      const xpathSelector = `//${element.xpath}`;
+      logger.info(`Trying XPath selector: ${xpathSelector}`);
+      try {
+        // Use Puppeteer's XPath selector syntax
+        const xpathHandle = await currentFrame.$(`xpath/${element.xpath}`);
+        if (xpathHandle) {
+          logger.info(`Element found with XPath: ${xpathSelector}`);
+          await this._scrollIntoViewIfNeeded(xpathHandle);
+          return xpathHandle;
+        }
+        logger.warning(`Element NOT found with XPath: ${xpathSelector}`);
+      } catch (error) {
+        logger.error(`Failed to locate element with XPath ${xpathSelector}:`, error);
+      }
+    }
+
+    // Strategy 3: If element has an ID, try simple ID selector
+    // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+    const elementId = element.attributes['id'];
+    if (elementId) {
+      logger.info(`Trying simple ID selector: #${elementId}`);
+      try {
+        const idHandle = await currentFrame.$(`#${elementId}`);
+        if (idHandle) {
+          logger.info(`Element found with ID selector: #${elementId}`);
+          await this._scrollIntoViewIfNeeded(idHandle);
+          return idHandle;
+        }
+        logger.warning(`Element NOT found with ID selector: #${elementId}`);
+      } catch (error) {
+        logger.error(`Failed to locate element with ID #${elementId}:`, error);
+      }
+    }
+
+    // Strategy 4: Try name attribute for form elements
+    // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+    const elementName = element.attributes['name'];
+    if (elementName && element.tagName) {
+      const nameSelector = `${element.tagName}[name="${elementName}"]`;
+      logger.info(`Trying name selector: ${nameSelector}`);
+      try {
+        const nameHandle = await currentFrame.$(nameSelector);
+        if (nameHandle) {
+          logger.info(`Element found with name selector: ${nameSelector}`);
+          await this._scrollIntoViewIfNeeded(nameHandle);
+          return nameHandle;
+        }
+        logger.warning(`Element NOT found with name selector: ${nameSelector}`);
+      } catch (error) {
+        logger.error(`Failed to locate element with name selector ${nameSelector}:`, error);
+      }
+    }
+
+    // Strategy 5: Try aria-label for accessibility
+    // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+    const ariaLabel = element.attributes['aria-label'];
+    if (ariaLabel && element.tagName) {
+      const ariaSelector = `${element.tagName}[aria-label="${ariaLabel}"]`;
+      logger.info(`Trying aria-label selector: ${ariaSelector}`);
+      try {
+        const ariaHandle = await currentFrame.$(ariaSelector);
+        if (ariaHandle) {
+          logger.info(`Element found with aria-label selector: ${ariaSelector}`);
+          await this._scrollIntoViewIfNeeded(ariaHandle);
+          return ariaHandle;
+        }
+        logger.warning(`Element NOT found with aria-label selector: ${ariaSelector}`);
+      } catch (error) {
+        logger.error(`Failed to locate element with aria-label selector ${ariaSelector}:`, error);
+      }
+    }
+
+    logger.error(`All strategies failed to locate element: ${element.tagName}[${element.highlightIndex}]`);
     return null;
   }
 
@@ -736,34 +821,122 @@ export default class Page {
     }
 
     try {
-      // Highlight before typing
+      // Use the element's information for error messages
+      const elementInfo = `${elementNode.tagName || 'element'}[${elementNode.highlightIndex}]`;
+
+      // Highlight before typing and get fresh element from updated state
+      let targetElement = elementNode;
       if (elementNode.highlightIndex !== undefined) {
         await this._updateState(useVision, elementNode.highlightIndex);
-      }
-
-      const element = await this.locateElement(elementNode);
-      if (!element) {
-        throw new Error(`Element: ${elementNode} not found`);
-      }
-
-      // Scroll element into view if needed
-      await this._scrollIntoViewIfNeeded(element);
-
-      // Clear the input field (equivalent to fill(''))
-      await element.evaluate(el => {
-        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-          el.value = '';
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+        // Get fresh element from the updated selectorMap (it may have new xpath/attributes)
+        const freshElement = this._state.selectorMap.get(elementNode.highlightIndex);
+        if (freshElement) {
+          targetElement = freshElement;
+          logger.debug(`Using fresh element from selectorMap for index ${elementNode.highlightIndex}`);
+        } else {
+          logger.warning(
+            `Element index ${elementNode.highlightIndex} no longer exists in selectorMap after state update`,
+          );
         }
+      }
+
+      const element = await this.locateElement(targetElement);
+      if (element) {
+        // Puppeteer method - scroll, clear, and type
+        await this._scrollIntoViewIfNeeded(element);
+
+        // Clear the input field (equivalent to fill(''))
+        await element.evaluate(el => {
+          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        });
+
+        // Type the text
+        await element.type(text);
+        logger.info(`Successfully typed into element ${elementInfo} using Puppeteer`);
+        return;
+      }
+
+      // Fallback: Use chrome.scripting.executeScript to interact directly
+      // This bypasses Puppeteer's DOM querying which may have issues
+      logger.warning(`Puppeteer locateElement failed for ${elementInfo}, trying chrome.scripting fallback`);
+
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const elementId = targetElement.attributes['id'];
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const elementName = targetElement.attributes['name'];
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const ariaLabel = targetElement.attributes['aria-label'];
+      const tagName = targetElement.tagName || 'input';
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: this._tabId },
+        func: function (params: { id?: string; name?: string; ariaLabel?: string; tagName: string; text: string }) {
+          let element: HTMLElement | null = null;
+
+          // Try to find element by ID
+          if (params.id) {
+            element = document.getElementById(params.id);
+          }
+
+          // Try by name
+          if (!element && params.name) {
+            element = document.querySelector(`${params.tagName}[name="${params.name}"]`);
+          }
+
+          // Try by aria-label
+          if (!element && params.ariaLabel) {
+            element = document.querySelector(`${params.tagName}[aria-label="${params.ariaLabel}"]`);
+          }
+
+          // Try just by tag name with role combobox (common for search boxes)
+          if (!element) {
+            element = document.querySelector(`${params.tagName}[role="combobox"]`);
+          }
+
+          if (!element) {
+            return { success: false, error: 'Element not found via any selector' };
+          }
+
+          // Focus and input text
+          element.focus();
+          if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+            element.value = params.text;
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true };
+          }
+
+          // For contenteditable elements
+          if (element.isContentEditable) {
+            element.textContent = params.text;
+            element.dispatchEvent(new Event('input', { bubbles: true }));
+            return { success: true };
+          }
+
+          return { success: false, error: 'Element is not an input or contenteditable' };
+        },
+        args: [{ id: elementId, name: elementName, ariaLabel: ariaLabel, tagName: tagName, text: text }],
       });
 
-      // Type the text
-      await element.type(text);
-      // Wait for stable state ?
-    } catch (error) {
+      const scriptResult = result[0]?.result;
+      if (scriptResult?.success) {
+        logger.info(`Successfully typed into element ${elementInfo} using chrome.scripting fallback`);
+        return;
+      }
+
+      const errorMsg = scriptResult?.error || 'Unknown error';
+      logger.error(`chrome.scripting fallback also failed: ${errorMsg}`);
       throw new Error(
-        `Failed to input text into element: ${elementNode}. Error: ${error instanceof Error ? error.message : String(error)}`,
+        `Element ${elementInfo} not found. CSS selector: ${targetElement.enhancedCssSelectorForElement(this._config.includeDynamicAttributes)}. Fallback error: ${errorMsg}`,
+      );
+    } catch (error) {
+      const errorInfo = `${elementNode.tagName || 'element'}[${elementNode.highlightIndex}]`;
+      throw new Error(
+        `Failed to input text into ${errorInfo}. Error: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -824,39 +997,162 @@ export default class Page {
     }
 
     try {
-      // Highlight before clicking
+      // Highlight before clicking and get fresh element from updated state
+      let targetElement = elementNode;
       if (elementNode.highlightIndex !== undefined) {
         await this._updateState(useVision, elementNode.highlightIndex);
-      }
-
-      const element = await this.locateElement(elementNode);
-      if (!element) {
-        throw new Error(`Element: ${elementNode} not found`);
-      }
-
-      // Scroll element into view if needed
-      await this._scrollIntoViewIfNeeded(element);
-
-      try {
-        // First attempt: Use Puppeteer's click method with timeout
-        await Promise.race([
-          element.click(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Click timeout')), 2000)),
-        ]);
-      } catch (error) {
-        // Second attempt: Use evaluate to perform a direct click
-        logger.info('Failed to click element, trying again', error);
-        try {
-          await element.evaluate(el => (el as HTMLElement).click());
-        } catch (secondError) {
-          throw new Error(
-            `Failed to click element: ${secondError instanceof Error ? secondError.message : String(secondError)}`,
+        // Get fresh element from the updated selectorMap (it may have new xpath/attributes)
+        const freshElement = this._state.selectorMap.get(elementNode.highlightIndex);
+        if (freshElement) {
+          targetElement = freshElement;
+          logger.debug(`Using fresh element from selectorMap for index ${elementNode.highlightIndex}`);
+        } else {
+          logger.warning(
+            `Element index ${elementNode.highlightIndex} no longer exists in selectorMap after state update`,
           );
         }
       }
+
+      const element = await this.locateElement(targetElement);
+
+      // If element is found via CSS selector, try clicking it
+      if (element) {
+        // Scroll element into view if needed
+        await this._scrollIntoViewIfNeeded(element);
+
+        try {
+          // First attempt: Use Puppeteer's click method with timeout
+          logger.info(`Clicking element with index ${targetElement.highlightIndex} using Puppeteer click`);
+          await Promise.race([
+            element.click(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Click timeout')), 2000)),
+          ]);
+          return; // Success!
+        } catch (error) {
+          logger.info('Puppeteer click failed, trying JavaScript click', error);
+
+          try {
+            // Second attempt: Use evaluate to perform a direct click
+            await element.evaluate(el => (el as HTMLElement).click());
+            return; // Success!
+          } catch (secondError) {
+            logger.info('JavaScript click failed, trying coordinate-based click', secondError);
+          }
+        }
+      } else {
+        logger.info(
+          `Element with index ${targetElement.highlightIndex} not found via CSS selector, trying coordinate-based click`,
+        );
+      }
+
+      // Third attempt: Use stored viewport coordinates for mouse click
+      if (targetElement.viewportCoordinates?.center) {
+        const { x, y } = targetElement.viewportCoordinates.center;
+        logger.info(`Attempting coordinate-based click at (${x}, ${y})`);
+
+        try {
+          // Move to position and click
+          await this._puppeteerPage.mouse.move(x, y);
+          await this._puppeteerPage.mouse.click(x, y);
+          return; // Success!
+        } catch (coordError) {
+          logger.error('Coordinate-based click failed:', coordError);
+        }
+      }
+
+      // Fourth attempt: Use pageCoordinates if viewport coordinates failed
+      if (targetElement.pageCoordinates?.center) {
+        const { x, y } = targetElement.pageCoordinates.center;
+        // Convert page coordinates to viewport coordinates by subtracting scroll position
+        const scrollX = targetElement.viewportInfo?.scrollX ?? 0;
+        const scrollY = targetElement.viewportInfo?.scrollY ?? 0;
+        const viewportX = x - scrollX;
+        const viewportY = y - scrollY;
+
+        logger.info(`Attempting page-coordinate-based click at viewport (${viewportX}, ${viewportY})`);
+
+        try {
+          await this._puppeteerPage.mouse.move(viewportX, viewportY);
+          await this._puppeteerPage.mouse.click(viewportX, viewportY);
+          return; // Success!
+        } catch (pageCoordError) {
+          logger.error('Page-coordinate-based click failed:', pageCoordError);
+        }
+      }
+
+      // Fifth attempt: Use chrome.scripting.executeScript as final fallback
+      logger.warning(
+        `All Puppeteer click methods failed for ${targetElement.tagName}[${targetElement.highlightIndex}], trying chrome.scripting fallback`,
+      );
+
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const elementId = targetElement.attributes['id'];
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const elementName = targetElement.attributes['name'];
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const ariaLabel = targetElement.attributes['aria-label'];
+      const tagName = targetElement.tagName || '*';
+      const viewportCenter = targetElement.viewportCoordinates?.center;
+
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: this._tabId },
+        func: function (params: {
+          id?: string;
+          name?: string;
+          ariaLabel?: string;
+          tagName: string;
+          center?: { x: number; y: number };
+        }) {
+          let element: HTMLElement | null = null;
+
+          // Try to find element by ID
+          if (params.id) {
+            element = document.getElementById(params.id);
+          }
+
+          // Try by name
+          if (!element && params.name) {
+            element = document.querySelector(`${params.tagName}[name="${params.name}"]`);
+          }
+
+          // Try by aria-label
+          if (!element && params.ariaLabel) {
+            element = document.querySelector(`${params.tagName}[aria-label="${params.ariaLabel}"]`);
+          }
+
+          // Try using elementFromPoint if we have coordinates
+          if (!element && params.center) {
+            element = document.elementFromPoint(params.center.x, params.center.y) as HTMLElement;
+          }
+
+          if (!element) {
+            return { success: false, error: 'Element not found via any selector' };
+          }
+
+          // Click the element
+          element.click();
+          return { success: true };
+        },
+        args: [{ id: elementId, name: elementName, ariaLabel: ariaLabel, tagName: tagName, center: viewportCenter }],
+      });
+
+      const scriptResult = result[0]?.result;
+      if (scriptResult?.success) {
+        logger.info(
+          `Successfully clicked element ${targetElement.tagName}[${targetElement.highlightIndex}] using chrome.scripting fallback`,
+        );
+        return;
+      }
+
+      const errorMsg = scriptResult?.error || 'Unknown error';
+      logger.error(`chrome.scripting fallback also failed: ${errorMsg}`);
+
+      throw new Error(
+        `All click attempts failed for element ${targetElement.tagName || 'element'}[${targetElement.highlightIndex}]. Fallback error: ${errorMsg}`,
+      );
     } catch (error) {
       throw new Error(
-        `Failed to click element: ${elementNode}. Error: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to click element: ${elementNode.tagName}[${elementNode.highlightIndex}]. Error: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
