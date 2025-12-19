@@ -3,6 +3,10 @@
 
 PagePilot is an open-source AI web automation tool that runs in your browser. A free alternative to OpenAI Operator with flexible LLM options and multi-agent system.
 
+
+https://github.com/user-attachments/assets/c55bbec9-5a46-417d-ae06-eea376786cce
+
+
 ## 🔥Why PagePilot?
 
 Looking for a powerful AI web agent without the $200/month price tag of OpenAI Operator? **PagePilot** , as a chrome extension, delivers premium web automation capabilities while keeping you in complete control:
