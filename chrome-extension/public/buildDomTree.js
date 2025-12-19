@@ -519,7 +519,7 @@ window.buildDomTree = (args = { doHighlightElements: true, focusHighlightIndex: 
       };
 
       // Add viewport and scroll information
-      nodeData.viewport = {
+      nodeData.viewportInfo = {
         scrollX: Math.round(scrollX),
         scrollY: Math.round(scrollY),
         width: window.innerWidth,
@@ -572,23 +572,39 @@ window.buildDomTree = (args = { doHighlightElements: true, focusHighlightIndex: 
 
     // Handle shadow DOM
     if (node.shadowRoot) {
-      const shadowChildren = Array.from(node.shadowRoot.childNodes).map(child => buildDomTree(child, parentIframe));
-      nodeData.children.push(...shadowChildren);
+      try {
+        const shadowChildren = Array.from(node.shadowRoot.childNodes)
+          .map(child => buildDomTree(child, parentIframe))
+          .filter(child => child !== null);
+        nodeData.children.push(...shadowChildren);
+      } catch (e) {
+        // Shadow root access failed - silently skip
+        nodeData.shadowRootAccessible = false;
+      }
     }
 
     // Handle iframes
     if (node.tagName === 'IFRAME') {
       try {
-        const iframeDoc = node.contentDocument || node.contentWindow.document;
-        if (iframeDoc) {
-          const iframeChildren = Array.from(iframeDoc.body.childNodes).map(child => buildDomTree(child, node));
+        const iframeDoc = node.contentDocument || node.contentWindow?.document;
+        if (iframeDoc && iframeDoc.body) {
+          const iframeChildren = Array.from(iframeDoc.body.childNodes)
+            .map(child => buildDomTree(child, node))
+            .filter(child => child !== null);
           nodeData.children.push(...iframeChildren);
         }
+        // If we can't access the iframe content, we just skip adding children
+        // This prevents phantom elements from being indexed
       } catch (e) {
-        console.warn('Unable to access iframe:', node);
+        // Cross-origin iframes cannot be accessed - this is expected behavior
+        // Silently skip adding children for inaccessible iframes
+        // The iframe element itself will still be in the tree, but without children
+        nodeData.iframeAccessible = false;
       }
     } else {
-      const children = Array.from(node.childNodes).map(child => buildDomTree(child, parentIframe));
+      const children = Array.from(node.childNodes)
+        .map(child => buildDomTree(child, parentIframe))
+        .filter(child => child !== null);
       nodeData.children.push(...children);
     }
 

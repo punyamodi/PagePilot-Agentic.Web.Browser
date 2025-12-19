@@ -295,99 +295,82 @@ export class DOMElementNode extends DOMBaseNode {
         return '';
       }
 
-      // Get base selector from XPath
-      let cssSelector = this.convertSimpleXPathToCssSelector(this.xpath);
+      const tagName = this.tagName || '*';
 
-      // Handle class attributes
+      // First, try to build a simple selector using unique identifiers
+      // If element has an ID, prefer using it (IDs are unique in the document)
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const id = this.attributes['id'];
+      if (id && /^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(id)) {
+        // Simple ID selector is very reliable
+        return `${tagName}#${id}`;
+      }
+
+      // If element has data-testid or data-qa (test attributes), use those
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const testId = this.attributes['data-testid'] || this.attributes['data-qa'] || this.attributes['data-cy'];
+      if (testId && includeDynamicAttributes) {
+        const attr = this.attributes['data-testid']
+          ? 'data-testid'
+          : this.attributes['data-qa']
+            ? 'data-qa'
+            : 'data-cy';
+        return `${tagName}[${attr}="${testId}"]`;
+      }
+
+      // If element has a unique name attribute (common for form elements)
+      // biome-ignore lint/complexity/useLiteralKeys: <explanation>
+      const name = this.attributes['name'];
+      if (name && ['input', 'textarea', 'select', 'button'].includes(tagName)) {
+        return `${tagName}[name="${name}"]`;
+      }
+
+      // If no unique identifier, build a more specific selector
+      // Start with tag name and add distinguishing attributes
+      let cssSelector = tagName;
+
+      // Add class attributes (limited to avoid overly specific selectors)
       // biome-ignore lint/complexity/useLiteralKeys: <explanation>
       if (this.attributes['class'] && includeDynamicAttributes) {
-        // Define a regex pattern for valid class names in CSS
         const validClassNamePattern = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
-
-        // Iterate through the class attribute values
-        // biome-ignore lint/complexity/useLiteralKeys: <explanation>s
+        // biome-ignore lint/complexity/useLiteralKeys: <explanation>
         const classes = this.attributes['class'].split(/\s+/);
+        let classCount = 0;
         for (const className of classes) {
-          // Skip empty class names
-          if (!className.trim()) {
-            continue;
-          }
-
-          // Check if the class name is valid
-          if (validClassNamePattern.test(className)) {
-            // Append the valid class name to the CSS selector
+          if (!className.trim()) continue;
+          // Skip dynamic-looking classes (contain numbers or long random strings)
+          if (/\d{3,}/.test(className) || className.length > 20) continue;
+          if (validClassNamePattern.test(className) && classCount < 2) {
             cssSelector += `.${className}`;
+            classCount++;
           }
         }
       }
 
-      // Expanded set of safe attributes that are stable and useful for selection
-      const SAFE_ATTRIBUTES = new Set([
-        // Data attributes (if they're stable in your application)
-        'id',
-        // Standard HTML attributes
-        'name',
-        'type',
-        'value',
-        'placeholder',
-        // Accessibility attributes
-        'aria-label',
-        'aria-labelledby',
-        'aria-describedby',
-        'role',
-        // Common form attributes
-        'for',
-        'autocomplete',
-        'required',
-        'readonly',
-        // Media attributes
-        'alt',
-        'title',
-        'src',
-        // Custom stable attributes
-        'href',
-        'target',
-      ]);
+      // Add key identifying attributes (not value, as it can change)
+      const KEY_ATTRIBUTES = new Set(['aria-label', 'role', 'type', 'placeholder', 'title', 'alt']);
 
-      // Handle other attributes
-      if (includeDynamicAttributes) {
-        SAFE_ATTRIBUTES.add('data-id');
-        SAFE_ATTRIBUTES.add('data-qa');
-        SAFE_ATTRIBUTES.add('data-cy');
-        SAFE_ATTRIBUTES.add('data-testid');
-      }
-
-      // Handle other attributes
       for (const [attribute, value] of Object.entries(this.attributes)) {
-        if (attribute === 'class') {
-          continue;
-        }
+        if (attribute === 'class' || attribute === 'id') continue;
+        if (!attribute.trim() || !KEY_ATTRIBUTES.has(attribute)) continue;
 
-        // Skip invalid attribute names
-        if (!attribute.trim()) {
-          continue;
-        }
+        // Skip empty values
+        if (!value || value === '') continue;
 
-        if (!SAFE_ATTRIBUTES.has(attribute)) {
-          continue;
-        }
-
-        // Escape special characters in attribute names
         const safeAttribute = attribute.replace(':', '\\:');
 
-        // Handle different value cases
-        if (value === '') {
-          cssSelector += `[${safeAttribute}]`;
-        } else if (/["'<>`\n\r\t]/.test(value)) {
-          // Use contains for values with special characters
-          // Regex-substitute any whitespace with a single space, then trim
+        if (/["'<>`\n\r\t]/.test(value)) {
           const collapsedValue = value.replace(/\s+/g, ' ').trim();
-          // Escape embedded double-quotes
           const safeValue = collapsedValue.replace(/"/g, '\\"');
           cssSelector += `[${safeAttribute}*="${safeValue}"]`;
         } else {
           cssSelector += `[${safeAttribute}="${value}"]`;
         }
+      }
+
+      // If selector is still just tag name, add XPath-based path as fallback
+      if (cssSelector === tagName) {
+        cssSelector = this.convertSimpleXPathToCssSelector(this.xpath);
       }
 
       return cssSelector;

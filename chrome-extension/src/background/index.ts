@@ -21,7 +21,9 @@ async function isScriptInjected(tabId: number): Promise<boolean> {
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => Object.prototype.hasOwnProperty.call(window, 'buildDomTree'),
+      func: function () {
+        return Object.prototype.hasOwnProperty.call(window, 'buildDomTree');
+      },
     });
     return results[0]?.result || false;
   } catch (err) {
